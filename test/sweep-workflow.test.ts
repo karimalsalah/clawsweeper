@@ -360,8 +360,9 @@ test("comment commands keep the router-to-sweep dispatch contract", () => {
   assert.match(routerWorkflow, /pnpm run repair:comment-router/);
   assert.match(
     routerWorkflow,
-    /status_comment_id="\$\{\{ github\.event\.client_payload\.status_comment_id \|\| '' \}\}"/,
+    /DISPATCH_STATUS_COMMENT_ID: \$\{\{ github\.event\.client_payload\.status_comment_id \|\| '' \}\}/,
   );
+  assert.match(routerWorkflow, /status_comment_id="\$DISPATCH_STATUS_COMMENT_ID"/);
   assert.match(routerWorkflow, /--status-comment-id "\$status_comment_id"/);
   assert.match(routerSource, /event_type:\s*"clawsweeper_item"/);
   assert.match(routerSource, /adaptiveReviewBudgetForPullRequest\(command\.target\)/);
@@ -426,8 +427,9 @@ test("sweep workflow schedules cursor-based PR comment sync batches", () => {
   assert.doesNotMatch(workflow, /apply_sync_open_pr_batch:/);
   assert.match(
     workflow,
-    /sync_batch_size="\$\{\{ github\.event_name == 'workflow_dispatch' && github\.event\.inputs\.apply_limit \|\| '25' \}\}"/,
+    /APPLY_SYNC_BATCH_SIZE: \$\{\{ github\.event_name == 'workflow_dispatch' && github\.event\.inputs\.apply_limit \|\| '25' \}\}/,
   );
+  assert.match(workflow, /sync_batch_size="\$APPLY_SYNC_BATCH_SIZE"/);
   assert.match(workflow, /\$item_numbers" = "__cursor__"/);
   assert.match(workflow, /comment-sync-batch/);
   assert.match(workflow, /write-comment-sync-cursor/);
@@ -479,8 +481,9 @@ test("target hot sweep dispatches honor shard cap payload", () => {
   assert.match(modeBlock, /elif \[ "\$hot_intake" = "true" \]; then/);
   assert.match(
     modeBlock,
-    /shard_count="\$\{\{ github\.event\.client_payload\.shard_count \|\| '' \}\}"/,
+    /HOT_SHARD_COUNT: \$\{\{ github\.event\.client_payload\.shard_count \|\| '' \}\}/,
   );
+  assert.match(modeBlock, /shard_count="\$HOT_SHARD_COUNT"/);
   assert.match(modeBlock, /shard_count="\$hot_intake_shards"/);
 });
 
@@ -510,13 +513,15 @@ test("sweep review continuations stay workflow-dispatch compatible", () => {
     workflow.indexOf("\n\n  recover-review-failures:"),
   );
   const recoveryBlock = workflow.slice(
-    workflow.indexOf("args=(\n            workflow run sweep.yml"),
+    workflow.indexOf("- name: Requeue planned review items once"),
     workflow.indexOf("\n\n  audit-dashboard:"),
   );
 
   for (const block of [continueBlock, recoveryBlock]) {
-    assert.match(block, /-f target_repo="\$\{\{ needs\.plan\.outputs\.target_repo \}\}"/);
-    assert.match(block, /-f target_branch="\$\{\{ needs\.plan\.outputs\.target_branch \}\}"/);
+    assert.match(block, /TARGET_REPO: \$\{\{ needs\.plan\.outputs\.target_repo \}\}/);
+    assert.match(block, /TARGET_BRANCH: \$\{\{ needs\.plan\.outputs\.target_branch \}\}/);
+    assert.match(block, /-f target_repo="\$TARGET_REPO"/);
+    assert.match(block, /-f target_branch="\$TARGET_BRANCH"/);
   }
 });
 
@@ -700,8 +705,9 @@ test("sweep exact event reviews consume adaptive Codex timeout payload", () => {
   assert.match(resolveBlock, /echo "media_proof_timeout_ms=\$media_proof_timeout_ms"/);
   assert.match(
     reviewBlock,
-    /codex_timeout_ms="\$\{\{ steps\.target\.outputs\.codex_timeout_ms \}\}"/,
+    /CODEX_TIMEOUT_MS: \$\{\{ steps\.target\.outputs\.codex_timeout_ms \}\}/,
   );
+  assert.match(reviewBlock, /codex_timeout_ms="\$CODEX_TIMEOUT_MS"/);
   assert.match(reviewBlock, /media_preprocessing_reserve_seconds=480/);
   assert.match(
     reviewBlock,

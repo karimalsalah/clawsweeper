@@ -529,6 +529,72 @@ test("authenticated legacy exact-review intake enters the durable queue", async 
   assert.equal(denied.status, 401);
 });
 
+test("exact-review claim and complete require valid signatures before forwarding", async () => {
+  const secret = "test-secret";
+  const forwarded: Array<{ body: string; method: string; path: string }> = [];
+  const queue = {
+    async fetch(request: Request) {
+      forwarded.push({
+        body: await request.text(),
+        method: request.method,
+        path: new URL(request.url).pathname,
+      });
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 202,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  };
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const requests = [
+    ["claim", '{ "lease_id": "lease-1", "run_id": "100" }\n'],
+    ["complete", '{\n  "lease_id": "lease-1",\n  "run_id": "100"\n}'],
+  ] as const;
+
+  for (const [path, body] of requests) {
+    const mismatchedSignature = `sha256=${createHmac("sha256", secret)
+      .update(`${body} `)
+      .digest("hex")}`;
+    for (const signature of [undefined, "sha256=invalid", mismatchedSignature]) {
+      const headers = new Headers({ "content-type": "application/json" });
+      if (signature) headers.set("x-clawsweeper-exact-review-signature", signature);
+      const denied = await worker.fetch(
+        new Request(`https://clawsweeper.openclaw.ai/internal/exact-review/${path}`, {
+          method: "POST",
+          headers,
+          body,
+        }),
+        env,
+      );
+      assert.equal(denied.status, 401);
+      assert.deepEqual(await denied.json(), { error: "invalid_signature" });
+    }
+
+    const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+    const accepted = await worker.fetch(
+      new Request(`https://clawsweeper.openclaw.ai/internal/exact-review/${path}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-clawsweeper-exact-review-signature": signature,
+        },
+        body,
+      }),
+      env,
+    );
+    assert.equal(accepted.status, 202);
+    assert.deepEqual(await accepted.json(), { ok: true });
+  }
+
+  assert.deepEqual(
+    forwarded,
+    requests.map(([path, body]) => ({ body, method: "POST", path: `/${path}` })),
+  );
+});
+
 test("exact-review queue retries dispatch failures and reclaims an unclaimed lease", async () => {
   const originalFetch = globalThis.fetch;
   const storage = new MemoryDurableStorage();

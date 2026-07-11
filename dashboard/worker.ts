@@ -565,11 +565,11 @@ export default {
     if (url.pathname === "/github/webhook" && request.method === "POST")
       return githubWebhook(request, env, ctx);
     if (url.pathname === "/internal/exact-review/enqueue" && request.method === "POST")
-      return authenticatedExactReviewEnqueue(request, env);
+      return authenticatedExactReviewQueueRequest(request, env, "/enqueue");
     if (url.pathname === "/internal/exact-review/claim" && request.method === "POST")
-      return exactReviewQueueRequest(env, "/claim", request);
+      return authenticatedExactReviewQueueRequest(request, env, "/claim");
     if (url.pathname === "/internal/exact-review/complete" && request.method === "POST")
-      return exactReviewQueueRequest(env, "/complete", request);
+      return authenticatedExactReviewQueueRequest(request, env, "/complete");
     if (url.pathname === "/api/exact-review-queue" && request.method === "GET")
       return exactReviewQueueRequest(env, "/stats");
     if (url.pathname === "/api/status") return statusJson(request, env, ctx);
@@ -1070,7 +1070,7 @@ async function exactReviewQueueRequest(env, path, request?: Request) {
   );
 }
 
-async function authenticatedExactReviewEnqueue(request, env) {
+async function authenticatedExactReviewQueueRequest(request, env, path) {
   const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
   if (!secret) return json({ error: "webhook_not_configured" }, 503);
   const body = await request.text();
@@ -1080,8 +1080,8 @@ async function authenticatedExactReviewEnqueue(request, env) {
   }
   return exactReviewQueueRequest(
     env,
-    "/enqueue",
-    new Request("https://clawsweeper-exact-review-queue/enqueue", {
+    path,
+    new Request(`https://clawsweeper-exact-review-queue${path}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body,

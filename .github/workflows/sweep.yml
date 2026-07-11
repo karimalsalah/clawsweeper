@@ -149,8 +149,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Explain skipped event
+        env:
+          SKIPPED_TARGET_REPO: ${{ github.event.client_payload.target_repo }}
+          SKIPPED_ITEM_NUMBER: ${{ github.event.client_payload.item_number || '?' }}
         run: |
-          echo "Skipping ${{ github.event.client_payload.target_repo }}#${{ github.event.client_payload.item_number || '?' }}."
+          printf 'Skipping %s#%s.\n' "$SKIPPED_TARGET_REPO" "$SKIPPED_ITEM_NUMBER"
           echo "Set CLAWSWEEPER_ENABLE_CLAWHUB=1 after installing the ClawSweeper GitHub App on openclaw/clawhub."
 
   legacy-event-queue-intake:
@@ -220,15 +223,19 @@ jobs:
         env:
           QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |
           set -euo pipefail
           test -n "$QUEUE_LEASE_ID"
+          test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
           queue_url="${QUEUE_URL%/}"
           payload="$(node -e 'process.stdout.write(JSON.stringify({ lease_id: process.env.QUEUE_LEASE_ID, run_id: process.env.GITHUB_RUN_ID }))')"
+          signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
           for attempt in 1 2 3; do
             if response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
               --request POST \
               --header "content-type: application/json" \
+              --header "x-clawsweeper-exact-review-signature: $signature" \
               --data "$payload" \
               "$queue_url/internal/exact-review/claim")" &&
               RESPONSE="$response" node -e '
@@ -255,12 +262,16 @@ jobs:
           ADAPTIVE_CODEX_TIMEOUT_MS: ${{ github.event.client_payload.codex_timeout_ms || '' }}
           CONFIGURED_CODEX_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1200000' }}
           MEDIA_PROOF_TIMEOUT_MS: ${{ github.event.client_payload.media_proof_timeout_ms || '0' }}
+          PAYLOAD_TARGET_REPO: ${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}
+          PAYLOAD_TARGET_BRANCH: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target_branch || github.event.client_payload.target_branch || 'main' }}
+          PAYLOAD_ITEM_NUMBER: ${{ github.event.client_payload.item_number || '' }}
+          PAYLOAD_ITEM_KIND: ${{ github.event.client_payload.item_kind || '' }}
         run: |
           set -euo pipefail
-          target_repo="${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}"
-          target_branch="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target_branch || github.event.client_payload.target_branch || 'main' }}"
-          item_number="${{ github.event.client_payload.item_number || '' }}"
-          item_kind="${{ github.event.client_payload.item_kind || '' }}"
+          target_repo="$PAYLOAD_TARGET_REPO"
+          target_branch="$PAYLOAD_TARGET_BRANCH"
+          item_number="$PAYLOAD_ITEM_NUMBER"
+          item_kind="$PAYLOAD_ITEM_KIND"
           if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
             echo "Invalid target_repo: $target_repo" >&2
             exit 1
@@ -398,12 +409,16 @@ jobs:
             ${{ steps.target.outputs.target_repo_name }}-git-${{ runner.os }}-
 
       - name: Check out target repository
+        env:
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          TARGET_CHECKOUT_DIR: ${{ steps.target.outputs.target_checkout_dir }}
+          TARGET_BRANCH: ${{ steps.target.outputs.target_branch }}
         run: |
           set -euo pipefail
-          url="https://github.com/${{ steps.target.outputs.target_repo }}.git"
-          cache_dir="${{ steps.target.outputs.target_checkout_dir }}-cache.git"
-          checkout_dir="${{ steps.target.outputs.target_checkout_dir }}"
-          target_branch="${{ steps.target.outputs.target_branch }}"
+          url="https://github.com/$TARGET_REPO.git"
+          cache_dir="$TARGET_CHECKOUT_DIR-cache.git"
+          checkout_dir="$TARGET_CHECKOUT_DIR"
+          target_branch="$TARGET_BRANCH"
           if [ -d "$cache_dir" ]; then
             git -C "$cache_dir" remote set-url origin "$url"
             git -C "$cache_dir" config remote.origin.promisor true
@@ -464,10 +479,15 @@ jobs:
           CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ steps.target-read-token.outputs.token || github.token }}
           ADDITIONAL_PROMPT: ${{ github.event.client_payload.additional_prompt || '' }}
           CLAWSWEEPER_RELATED_GITHUB_SEARCH: ${{ vars.CLAWSWEEPER_RELATED_GITHUB_SEARCH || '1' }}
+          CODEX_TIMEOUT_MS: ${{ steps.target.outputs.codex_timeout_ms }}
+          MEDIA_PROOF_TIMEOUT_MS: ${{ steps.target.outputs.media_proof_timeout_ms }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          TARGET_CHECKOUT_DIR: ${{ steps.target.outputs.target_checkout_dir }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
-          codex_timeout_ms="${{ steps.target.outputs.codex_timeout_ms }}"
+          codex_timeout_ms="$CODEX_TIMEOUT_MS"
           if ! [[ "$codex_timeout_ms" =~ ^[0-9]+$ ]] || [ "$codex_timeout_ms" -lt 1 ]; then
             echo "Invalid Codex timeout: $codex_timeout_ms" >&2
             exit 1
@@ -477,14 +497,14 @@ jobs:
             additional_prompt_arg=(--additional-prompt "$ADDITIONAL_PROMPT")
           fi
           codex_timeout_seconds=$(((codex_timeout_ms + 999) / 1000))
-          media_proof_timeout_ms="${{ steps.target.outputs.media_proof_timeout_ms }}"
+          media_proof_timeout_ms="$MEDIA_PROOF_TIMEOUT_MS"
           media_proof_timeout_seconds=$(((media_proof_timeout_ms + 999) / 1000))
           media_preprocessing_reserve_seconds=480
           review_timeout_seconds=$((codex_timeout_seconds + media_preprocessing_reserve_seconds + 180))
           echo "::notice::Exact event review timeout is ${review_timeout_seconds}s for per-item Codex timeout ${codex_timeout_seconds}s, reserved media preprocessing ${media_preprocessing_reserve_seconds}s, and detected media allowance ${media_proof_timeout_seconds}s."
           timeout --kill-after=30s "${review_timeout_seconds}s" pnpm run review -- \
-            --target-repo "${{ steps.target.outputs.target_repo }}" \
-            --target-dir "${{ steps.target.outputs.target_checkout_dir }}" \
+            --target-repo "$TARGET_REPO" \
+            --target-dir "$TARGET_CHECKOUT_DIR" \
             --artifact-dir artifacts/event \
             --batch-size 1 \
             --max-pages 1 \
@@ -492,7 +512,7 @@ jobs:
             --codex-reasoning-effort high \
             --codex-sandbox danger-full-access \
             --codex-timeout-ms "$codex_timeout_ms" \
-            --item-numbers "${{ steps.target.outputs.item_number }}" \
+            --item-numbers "$ITEM_NUMBER" \
             --readonly-openclaw \
             --shard-index 0 \
             --shard-count 1 \
@@ -732,15 +752,19 @@ jobs:
         env:
           QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |
           set -euo pipefail
           test -n "$QUEUE_LEASE_ID"
+          test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
           queue_url="${QUEUE_URL%/}"
           payload="$(node -e 'process.stdout.write(JSON.stringify({ lease_id: process.env.QUEUE_LEASE_ID, run_id: process.env.GITHUB_RUN_ID }))')"
+          signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
           for attempt in 1 2 3; do
             if curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
               --request POST \
               --header "content-type: application/json" \
+              --header "x-clawsweeper-exact-review-signature: $signature" \
               --data "$payload" \
               "$queue_url/internal/exact-review/complete" >/dev/null; then
               exit 0
@@ -857,9 +881,12 @@ jobs:
 
       - name: Resolve target repository
         id: target
+        env:
+          REQUESTED_TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || '' }}
+          REQUESTED_TARGET_BRANCH: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target_branch || github.event.client_payload.target_branch || 'main' }}
         run: |
-          target_repo="${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || '' }}"
-          target_branch="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target_branch || github.event.client_payload.target_branch || 'main' }}"
+          target_repo="$REQUESTED_TARGET_REPO"
+          target_branch="$REQUESTED_TARGET_BRANCH"
           if [ -z "$target_repo" ]; then
             case "${{ github.event.schedule || '' }}" in
               "2/5 * * * *"|"22 * * * *"|"8,23,38,53 * * * *"|"12 */6 * * *")
@@ -867,8 +894,12 @@ jobs:
                 ;;
               *)
                 target_repo="openclaw/openclaw"
-              ;;
+                ;;
             esac
+          fi
+          if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+            echo "Invalid target_repo: $target_repo" >&2
+            exit 1
           fi
           if ! printf '%s' "$target_branch" | grep -Eq '^[A-Za-z0-9_.\/-]+$'; then
             echo "Invalid target_branch: $target_branch" >&2
@@ -930,11 +961,13 @@ jobs:
         if: ${{ !((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true' && github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) }}
         continue-on-error: true
         working-directory: clawsweeper
+        env:
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
         run: |
-          target_slug="${{ steps.target.outputs.target_repo }}"
+          target_slug="$TARGET_REPO"
           target_slug="${target_slug//\//-}"
           pnpm run status -- \
-            --target-repo "${{ steps.target.outputs.target_repo }}" \
+            --target-repo "$TARGET_REPO" \
             --state "Planning review" \
             --detail "Planner is scanning GitHub for the next review candidates. Candidate counts and shard details will be posted after planning completes." \
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -946,6 +979,13 @@ jobs:
       - id: mode
         env:
           GH_TOKEN: ${{ github.token }}
+          HOT_INTAKE: ${{ ((github.event_name == 'repository_dispatch' && github.event.client_payload.hot_intake == 'true') || (github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'true' || 'false' }}
+          EXACT_ITEM: ${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}
+          HOT_SHARD_COUNT: ${{ github.event.client_payload.shard_count || '' }}
+          REQUESTED_BATCH_SIZE: ${{ github.event.client_payload.batch_size || github.event.inputs.batch_size || '3' }}
+          REQUESTED_SHARD_COUNT: ${{ github.event.client_payload.shard_count || github.event.inputs.shard_count || '' }}
+          CODEX_TIMEOUT_MS: ${{ github.event.client_payload.codex_timeout_ms || github.event.inputs.codex_timeout_ms || vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1200000' }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
         run: |
           limit() {
             pnpm --dir clawsweeper run --silent workflow -- limit "$1"
@@ -1014,16 +1054,16 @@ jobs:
           active_background_workers="$(( $(active_run_count "ClawSweeper Commit Review") * commit_page_size + $(active_sweep_background_workers) ))"
           hot_intake_shards="$(worker_limit hot_intake --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
           normal_shards="$(worker_limit normal_review --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
-          hot_intake="${{ ((github.event_name == 'repository_dispatch' && github.event.client_payload.hot_intake == 'true') || (github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'true' || 'false' }}"
-          exact_item="${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}"
-          target_repo="${{ steps.target.outputs.target_repo }}"
+          hot_intake="$HOT_INTAKE"
+          exact_item="$EXACT_ITEM"
+          target_repo="$TARGET_REPO"
           if [ "$hot_intake" = "true" ] && [ -n "$exact_item" ]; then
             batch_size="1"
             shard_count="$exact_item_shards"
             max_pages="1"
           elif [ "$hot_intake" = "true" ]; then
             batch_size="1"
-            shard_count="${{ github.event.client_payload.shard_count || '' }}"
+            shard_count="$HOT_SHARD_COUNT"
             if [ -z "$shard_count" ]; then
               shard_count="$hot_intake_shards"
             fi
@@ -1034,20 +1074,31 @@ jobs:
             if [ "${{ github.event_name }}" = "schedule" ]; then
               batch_size="3"
             else
-              batch_size="${{ github.event.client_payload.batch_size || github.event.inputs.batch_size || '3' }}"
+              batch_size="$REQUESTED_BATCH_SIZE"
             fi
             if [ "$target_repo" = "openclaw/openclaw" ]; then
               min_active_shards="$normal_active_floor"
             else
               min_active_shards="0"
             fi
-            shard_count="${{ github.event.client_payload.shard_count || github.event.inputs.shard_count || '' }}"
+            shard_count="$REQUESTED_SHARD_COUNT"
             if [ -z "$shard_count" ]; then
               shard_count="$normal_shards"
             fi
             max_pages="250"
             min_backfill_review_age_minutes="360"
           fi
+          if ! [[ "$batch_size" =~ ^[0-9]+$ ]] || [ "${#batch_size}" -gt 9 ] || ((10#$batch_size < 1)); then
+            echo "::error::batch_size must be a positive integer with at most 9 digits"
+            exit 1
+          fi
+          batch_size="$((10#$batch_size))"
+          codex_timeout_ms="$CODEX_TIMEOUT_MS"
+          if ! [[ "$codex_timeout_ms" =~ ^[0-9]+$ ]] || [ "${#codex_timeout_ms}" -gt 10 ] || ((10#$codex_timeout_ms < 1)); then
+            echo "::error::codex_timeout_ms must be a positive integer with at most 10 digits"
+            exit 1
+          fi
+          codex_timeout_ms="$((10#$codex_timeout_ms))"
           if [ "$hot_intake" = "true" ] && [ -n "$exact_item" ]; then
             min_active_shards="0"
             min_backfill_review_age_minutes="360"
@@ -1073,7 +1124,7 @@ jobs:
           fi
           {
             echo "batch_size=$batch_size"
-            echo "codex_timeout_ms=${{ github.event.client_payload.codex_timeout_ms || github.event.inputs.codex_timeout_ms || vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1200000' }}"
+            echo "codex_timeout_ms=$codex_timeout_ms"
             echo "hot_intake=$hot_intake"
             echo "max_pages=$max_pages"
             echo "min_active_shards=$min_active_shards"
@@ -1224,12 +1275,16 @@ jobs:
             ${{ needs.plan.outputs.target_repo_name }}-git-${{ runner.os }}-
 
       - name: Check out target repository
+        env:
+          TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
+          TARGET_CHECKOUT_DIR: ${{ needs.plan.outputs.target_checkout_dir }}
+          TARGET_BRANCH: ${{ needs.plan.outputs.target_branch }}
         run: |
           set -euo pipefail
-          url="https://github.com/${{ needs.plan.outputs.target_repo }}.git"
-          cache_dir="${{ needs.plan.outputs.target_checkout_dir }}-cache.git"
-          checkout_dir="${{ needs.plan.outputs.target_checkout_dir }}"
-          target_branch="${{ needs.plan.outputs.target_branch }}"
+          url="https://github.com/$TARGET_REPO.git"
+          cache_dir="$TARGET_CHECKOUT_DIR-cache.git"
+          checkout_dir="$TARGET_CHECKOUT_DIR"
+          target_branch="$TARGET_BRANCH"
           if [ -d "$cache_dir" ]; then
             git -C "$cache_dir" remote set-url origin "$url"
             git -C "$cache_dir" config remote.origin.promisor true
@@ -1267,39 +1322,56 @@ jobs:
           GH_TOKEN: ${{ steps.target-read-token.outputs.token || github.token }}
           CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ steps.codex-inspection-token.outputs.token || github.token }}
           ADDITIONAL_PROMPT: ${{ github.event.inputs.additional_prompt || github.event.client_payload.additional_prompt || '' }}
+          HOT_INTAKE: ${{ needs.plan.outputs.hot_intake }}
+          CODEX_TIMEOUT_MS: ${{ needs.plan.outputs.codex_timeout_ms }}
+          BATCH_SIZE: ${{ needs.plan.outputs.batch_size }}
+          TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
+          TARGET_CHECKOUT_DIR: ${{ needs.plan.outputs.target_checkout_dir }}
+          MAX_PAGES: ${{ needs.plan.outputs.max_pages }}
+          ITEM_NUMBERS: ${{ matrix.item_numbers }}
+          SHARD_INDEX: ${{ matrix.shard }}
+          PLANNED_SHARDS: ${{ needs.plan.outputs.planned_shards }}
         run: |
           hot_intake_arg=()
-          if [ "${{ needs.plan.outputs.hot_intake }}" = "true" ]; then
+          if [ "$HOT_INTAKE" = "true" ]; then
             hot_intake_arg=(--hot-intake)
           fi
           additional_prompt_arg=()
           if [ -n "$ADDITIONAL_PROMPT" ]; then
             additional_prompt_arg=(--additional-prompt "$ADDITIONAL_PROMPT")
           fi
-          codex_timeout_seconds=$(((${{ needs.plan.outputs.codex_timeout_ms }} + 999) / 1000))
-          review_timeout_seconds=$(((codex_timeout_seconds + 180) * ${{ needs.plan.outputs.batch_size }}))
+          if ! [[ "$BATCH_SIZE" =~ ^[0-9]+$ ]] || [ "${#BATCH_SIZE}" -gt 9 ] || ((10#$BATCH_SIZE < 1)); then
+            echo "::error::invalid plan batch_size"
+            exit 1
+          fi
+          if ! [[ "$CODEX_TIMEOUT_MS" =~ ^[0-9]+$ ]] || [ "${#CODEX_TIMEOUT_MS}" -gt 10 ] || ((10#$CODEX_TIMEOUT_MS < 1)); then
+            echo "::error::invalid plan codex_timeout_ms"
+            exit 1
+          fi
+          codex_timeout_seconds=$(((10#$CODEX_TIMEOUT_MS + 999) / 1000))
+          review_timeout_seconds=$(((codex_timeout_seconds + 180) * 10#$BATCH_SIZE))
           if [ "$review_timeout_seconds" -lt 300 ]; then
             review_timeout_seconds=300
           fi
           if [ "$review_timeout_seconds" -gt 4200 ]; then
             review_timeout_seconds=4200
           fi
-          echo "::notice::Review shard timeout is ${review_timeout_seconds}s for batch size ${{ needs.plan.outputs.batch_size }} and per-item Codex timeout ${codex_timeout_seconds}s."
+          echo "::notice::Review shard timeout is ${review_timeout_seconds}s for batch size $BATCH_SIZE and per-item Codex timeout ${codex_timeout_seconds}s."
           timeout --kill-after=30s "${review_timeout_seconds}s" node dist/clawsweeper.js review \
-            --target-repo "${{ needs.plan.outputs.target_repo }}" \
-            --target-dir "../${{ needs.plan.outputs.target_checkout_dir }}" \
-            --artifact-dir ../review-artifacts/shard-${{ matrix.shard }} \
-            --batch-size ${{ needs.plan.outputs.batch_size }} \
-            --max-pages ${{ needs.plan.outputs.max_pages }} \
+            --target-repo "$TARGET_REPO" \
+            --target-dir "../$TARGET_CHECKOUT_DIR" \
+            --artifact-dir "../review-artifacts/shard-$SHARD_INDEX" \
+            --batch-size "$BATCH_SIZE" \
+            --max-pages "$MAX_PAGES" \
             --codex-model internal \
             --codex-reasoning-effort high \
             --codex-sandbox danger-full-access \
-            --codex-timeout-ms ${{ needs.plan.outputs.codex_timeout_ms }} \
-            --item-numbers "${{ matrix.item_numbers }}" \
+            --codex-timeout-ms "$CODEX_TIMEOUT_MS" \
+            --item-numbers "$ITEM_NUMBERS" \
             "${hot_intake_arg[@]}" \
             --readonly-openclaw \
-            --shard-index ${{ matrix.shard }} \
-            --shard-count ${{ needs.plan.outputs.planned_shards }} \
+            --shard-index "$SHARD_INDEX" \
+            --shard-count "$PLANNED_SHARDS" \
             "${additional_prompt_arg[@]}"
 
       - name: Record shard metrics
@@ -1716,6 +1788,8 @@ jobs:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
           CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}
+          APPLY_CLOSE_REASONS: ${{ github.event.inputs.apply_after_review_close_reasons || 'implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr' }}
+          APPLY_MIN_AGE_MINUTES: ${{ github.event.inputs.apply_after_review_min_age_minutes || '0' }}
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
@@ -1727,8 +1801,8 @@ jobs:
             exit 0
           fi
           item_count="$(pnpm run --silent workflow -- count-csv --items "$item_numbers")"
-          close_reasons="${{ github.event.inputs.apply_after_review_close_reasons || 'implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr' }}"
-          min_age_minutes="${{ github.event.inputs.apply_after_review_min_age_minutes || '0' }}"
+          close_reasons="$APPLY_CLOSE_REASONS"
+          min_age_minutes="$APPLY_MIN_AGE_MINUTES"
           git pull --rebase --autostash
           pnpm run apply-decisions -- \
             --target-repo "$TARGET_REPO" \
@@ -1767,17 +1841,23 @@ jobs:
         if: ${{ success() && needs.plan.outputs.planned_count == needs.plan.outputs.planned_capacity && github.event_name != 'repository_dispatch' && (github.event_name != 'workflow_dispatch' || (github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '')) }}
         env:
           GH_TOKEN: ${{ github.token }}
+          HOT_INTAKE: ${{ needs.plan.outputs.hot_intake }}
+          TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
+          TARGET_BRANCH: ${{ needs.plan.outputs.target_branch }}
+          BATCH_SIZE: ${{ needs.plan.outputs.batch_size }}
+          SHARD_COUNT: ${{ needs.plan.outputs.shard_count }}
+          CODEX_TIMEOUT_MS: ${{ needs.plan.outputs.codex_timeout_ms }}
         run: |
           for attempt in 1 2 3; do
             if gh workflow run sweep.yml \
               --ref main \
               -f apply_existing=false \
-              -f hot_intake="${{ needs.plan.outputs.hot_intake }}" \
-              -f target_repo="${{ needs.plan.outputs.target_repo }}" \
-              -f target_branch="${{ needs.plan.outputs.target_branch }}" \
-              -f batch_size="${{ needs.plan.outputs.batch_size }}" \
-              -f shard_count="${{ needs.plan.outputs.shard_count }}" \
-              -f codex_timeout_ms="${{ needs.plan.outputs.codex_timeout_ms }}"; then
+              -f hot_intake="$HOT_INTAKE" \
+              -f target_repo="$TARGET_REPO" \
+              -f target_branch="$TARGET_BRANCH" \
+              -f batch_size="$BATCH_SIZE" \
+              -f shard_count="$SHARD_COUNT" \
+              -f codex_timeout_ms="$CODEX_TIMEOUT_MS"; then
               exit 0
             fi
             sleep "$((attempt * 10))"
@@ -1807,6 +1887,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ADDITIONAL_PROMPT: ${{ github.event.inputs.additional_prompt || '' }}
           MATRIX_JSON: ${{ needs.plan.outputs.matrix }}
+          TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
+          TARGET_BRANCH: ${{ needs.plan.outputs.target_branch }}
+          BATCH_SIZE: ${{ needs.plan.outputs.batch_size }}
+          CODEX_TIMEOUT_MS: ${{ needs.plan.outputs.codex_timeout_ms }}
         run: |
           set -euo pipefail
           recovery_prompt="[clawsweeper-recovery-attempt=1]"
@@ -1868,11 +1952,11 @@ jobs:
             --ref main
             -f apply_existing=false
             -f hot_intake=false
-            -f target_repo="${{ needs.plan.outputs.target_repo }}"
-            -f target_branch="${{ needs.plan.outputs.target_branch }}"
-            -f batch_size="${{ needs.plan.outputs.batch_size }}"
+            -f target_repo="$TARGET_REPO"
+            -f target_branch="$TARGET_BRANCH"
+            -f batch_size="$BATCH_SIZE"
             -f shard_count="$recovery_shard_count"
-            -f codex_timeout_ms="${{ needs.plan.outputs.codex_timeout_ms }}"
+            -f codex_timeout_ms="$CODEX_TIMEOUT_MS"
             -f item_numbers="$item_numbers"
             -f additional_prompt="$recovery_prompt"
           )
@@ -1966,8 +2050,10 @@ jobs:
 
       - name: Resolve target repository
         id: target
+        env:
+          REQUESTED_TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || '' }}
         run: |
-          target_repo="${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || '' }}"
+          target_repo="$REQUESTED_TARGET_REPO"
           if [ -z "$target_repo" ]; then
             case "${{ github.event.schedule || '' }}" in
               "12 */6 * * *")
@@ -1980,6 +2066,10 @@ jobs:
                 target_repo="openclaw/openclaw"
                 ;;
             esac
+          fi
+          if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+            echo "Invalid target_repo: $target_repo" >&2
+            exit 1
           fi
           target_owner="${target_repo%%/*}"
           target_name="${target_repo#*/}"
@@ -2087,8 +2177,10 @@ jobs:
 
       - name: Resolve target repository
         id: target
+        env:
+          REQUESTED_TARGET_REPO: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo || github.event.inputs.target_repo || '' }}
         run: |
-          target_repo="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo || github.event.inputs.target_repo || '' }}"
+          target_repo="$REQUESTED_TARGET_REPO"
           if [ -z "$target_repo" ]; then
             case "${{ github.event.schedule || '' }}" in
               "8,23,38,53 * * * *")
@@ -2098,6 +2190,10 @@ jobs:
                 target_repo="openclaw/openclaw"
                 ;;
             esac
+          fi
+          if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+            echo "Invalid target_repo: $target_repo" >&2
+            exit 1
           fi
           target_owner="${target_repo%%/*}"
           target_name="${target_repo#*/}"
@@ -2142,9 +2238,10 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          REQUESTED_ITEM_NUMBERS: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}
         run: |
           set -euo pipefail
-          item_numbers="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}"
+          item_numbers="$REQUESTED_ITEM_NUMBERS"
           if [ "$item_numbers" = "__cursor__" ]; then
             item_numbers=""
           fi
@@ -2158,20 +2255,28 @@ jobs:
         id: apply-preselect
         env:
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          REQUESTED_ITEM_NUMBERS: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}
+          APPLY_MIN_AGE_DAYS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}
+          APPLY_MIN_AGE_MINUTES: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}
+          APPLY_KIND: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}
+          APPLY_CLOSE_REASONS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_reasons || 'all' }}
+          APPLY_STALE_MIN_AGE_DAYS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}
+          APPLY_SYNC_COMMENTS_ONLY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_comments_only || 'false' }}
+          APPLY_SYNC_BATCH_SIZE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '25' }}
         run: |
           set -euo pipefail
-          min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}"
-          min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
-          apply_kind="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}"
-          apply_close_reasons="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_reasons || 'all' }}"
-          stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
-          item_numbers="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}"
+          min_age_days="$APPLY_MIN_AGE_DAYS"
+          min_age_minutes="$APPLY_MIN_AGE_MINUTES"
+          apply_kind="$APPLY_KIND"
+          apply_close_reasons="$APPLY_CLOSE_REASONS"
+          stale_min_age_days="$APPLY_STALE_MIN_AGE_DAYS"
+          item_numbers="$REQUESTED_ITEM_NUMBERS"
           sync_open_pr_batch="${{ github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *' && 'true' || 'false' }}"
           if [ "$item_numbers" = "__cursor__" ]; then
             sync_open_pr_batch="true"
             item_numbers=""
           fi
-          sync_comments_only="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_comments_only || 'false' }}"
+          sync_comments_only="$APPLY_SYNC_COMMENTS_ONLY"
           product_direction_enabled=false
           case "${CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED,,}" in
             true|1|yes|on) product_direction_enabled=true ;;
@@ -2195,7 +2300,7 @@ jobs:
               target_slug="$TARGET_REPO"
               target_slug="${target_slug//\//-}"
               cursor_path="results/comment-sync-cursors/${target_slug}.json"
-              sync_batch_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '25' }}"
+              sync_batch_size="$APPLY_SYNC_BATCH_SIZE"
               batch_env=".artifacts/apply-preselect-comment-sync-batch.env"
               mkdir -p "$(dirname "$batch_env")"
               pnpm run --silent workflow -- comment-sync-batch \
@@ -2238,28 +2343,77 @@ jobs:
           CLAWSWEEPER_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CLAWSWEEPER_THROTTLE_STATUS_MIN_WAIT_MS: "60000"
           CLAWSWEEPER_THROTTLE_STATUS_MIN_INTERVAL_MS: "120000"
+          REQUESTED_ITEM_NUMBERS: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}
+          APPLY_LIMIT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '5' }}
+          APPLY_MIN_AGE_DAYS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}
+          APPLY_MIN_AGE_MINUTES: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}
+          APPLY_KIND: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}
+          APPLY_CLOSE_REASONS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_reasons || 'all' }}
+          APPLY_STALE_MIN_AGE_DAYS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}
+          APPLY_CLOSE_DELAY_MS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_delay_ms || '2000' }}
+          APPLY_CHECKPOINT_SIZE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '5' }}
+          APPLY_SYNC_BATCH_SIZE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '25' }}
+          APPLY_SYNC_COMMENTS_ONLY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_comments_only || 'false' }}
+          APPLY_COMMENT_SYNC_MIN_AGE_DAYS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_comment_sync_min_age_days || '7' }}
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
-          limit="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '5' }}"
-          min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}"
-          min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
-          apply_kind="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}"
-          apply_close_reasons="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_reasons || 'all' }}"
-          stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
-          close_delay_ms="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_delay_ms || '2000' }}"
+          normalize_uint() {
+            local name="$1"
+            local value="$2"
+            local max_digits="$3"
+            local allow_empty="${4:-false}"
+            if [ "$allow_empty" = "true" ] && [ -z "$value" ]; then
+              return 0
+            fi
+            if ! [[ "$value" =~ ^[0-9]+$ ]] || [ "${#value}" -gt "$max_digits" ]; then
+              echo "::error::$name must be a non-negative integer with at most $max_digits digits" >&2
+              return 1
+            fi
+            printf '%s' "$((10#$value))"
+          }
+          limit="$(normalize_uint "apply_limit" "$APPLY_LIMIT" 6)"
+          min_age_days="$(normalize_uint "apply_min_age_days" "$APPLY_MIN_AGE_DAYS" 6)"
+          min_age_minutes="$(normalize_uint "apply_min_age_minutes" "$APPLY_MIN_AGE_MINUTES" 9 true)"
+          apply_kind="$APPLY_KIND"
+          apply_close_reasons="$APPLY_CLOSE_REASONS"
+          stale_min_age_days="$(normalize_uint "apply_stale_min_age_days" "$APPLY_STALE_MIN_AGE_DAYS" 6)"
+          close_delay_ms="$(normalize_uint "apply_close_delay_ms" "$APPLY_CLOSE_DELAY_MS" 10)"
           progress_every="10"
-          checkpoint_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '5' }}"
+          checkpoint_size="$(normalize_uint "apply_checkpoint_size" "$APPLY_CHECKPOINT_SIZE" 6)"
           comment_sync_processed_limit=1000
           close_processed_limit=300
-          sync_batch_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '25' }}"
-          item_numbers="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}"
+          sync_batch_size="$(normalize_uint "apply_limit" "$APPLY_SYNC_BATCH_SIZE" 6)"
+          item_numbers="$REQUESTED_ITEM_NUMBERS"
           sync_open_pr_batch="${{ github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *' && 'true' || 'false' }}"
           if [ "$item_numbers" = "__cursor__" ]; then
             sync_open_pr_batch="true"
             item_numbers=""
           fi
-          sync_comments_only="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_comments_only || 'false' }}"
+          sync_comments_only="$APPLY_SYNC_COMMENTS_ONLY"
+          comment_sync_min_age_days="$(normalize_uint "apply_comment_sync_min_age_days" "$APPLY_COMMENT_SYNC_MIN_AGE_DAYS" 6)"
+          if [ "$limit" -lt 1 ] || [ "$checkpoint_size" -lt 1 ] || [ "$sync_batch_size" -lt 1 ]; then
+            echo "::error::apply_limit and apply_checkpoint_size must be positive integers" >&2
+            exit 1
+          fi
+          case "$apply_kind" in
+            issue|pull_request|all) ;;
+            *)
+              echo "::error::Invalid apply_kind: $apply_kind" >&2
+              exit 1
+              ;;
+          esac
+          if ! [[ "$apply_close_reasons" =~ ^[a-z0-9_]+(,[a-z0-9_]+)*$ ]]; then
+            echo "::error::Invalid apply_close_reasons" >&2
+            exit 1
+          fi
+          case "$sync_comments_only" in
+            true|false) ;;
+            *)
+              echo "::error::Invalid apply_sync_comments_only" >&2
+              exit 1
+              ;;
+          esac
           product_direction_enabled=false
           case "${CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED,,}" in
             true|1|yes|on) product_direction_enabled=true ;;
@@ -2272,7 +2426,6 @@ jobs:
             echo "APPLY_NOOP=true" >> "$GITHUB_ENV"
             exit 0
           fi
-          comment_sync_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_comment_sync_min_age_days || '7' }}"
           target_slug="$TARGET_REPO"
           target_slug="${target_slug//\//-}"
           cursor_path="results/comment-sync-cursors/${target_slug}.json"
@@ -2281,6 +2434,10 @@ jobs:
             sync_comments_only="true"
             apply_kind="pull_request"
             comment_sync_min_age_days="0"
+          fi
+          if [ -n "$item_numbers" ] && ! [[ "$item_numbers" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+            echo "::error::Invalid apply_item_numbers" >&2
+            exit 1
           fi
           sync_comments_arg=()
           if [ "$sync_comments_only" = "true" ]; then

@@ -173,28 +173,48 @@ jobs:
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
           CLAWSWEEPER_MUTATION_TOKEN_SOURCE: clawsweeper-app
           CLAWSWEEPER_ALLOW_MERGE: ${{ vars.CLAWSWEEPER_ALLOW_MERGE || '0' }}
+          DISPATCH_TARGET_REPO: ${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}
+          DISPATCH_TARGET_BRANCH: ${{ github.event.client_payload.target_branch || '' }}
+          DISPATCH_LOOKBACK_MINUTES: ${{ github.event.client_payload.lookback_minutes || vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
+          DISPATCH_MAX_COMMENTS: ${{ github.event.client_payload.max_comments || '1' }}
+          DISPATCH_ITEM_NUMBERS: ${{ github.event.client_payload.item_number || '' }}
+          DISPATCH_COMMENT_IDS: ${{ github.event.client_payload.comment_id || '' }}
+          DISPATCH_STATUS_COMMENT_ID: ${{ github.event.client_payload.status_comment_id || '' }}
+          DISPATCH_FORCE_REPROCESS: ${{ github.event.client_payload.force_reprocess || 'false' }}
+          INPUT_TARGET_REPO: ${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
+          INPUT_TARGET_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.target_branch || '' }}
+          INPUT_LOOKBACK_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.lookback_minutes || vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
+          INPUT_SINCE: ${{ github.event_name == 'workflow_dispatch' && inputs.since || '' }}
+          INPUT_MAX_COMMENTS: ${{ github.event_name == 'workflow_dispatch' && inputs.max_comments || vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '100' }}
+          INPUT_ITEM_NUMBERS: ${{ github.event_name == 'workflow_dispatch' && inputs.item_numbers || '' }}
+          INPUT_COMMENT_IDS: ${{ github.event_name == 'workflow_dispatch' && inputs.comment_ids || '' }}
+          INPUT_RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+          INPUT_EXECUTION_RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.execution_runner || vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
+          INPUT_FORCE_REPROCESS: ${{ github.event_name == 'workflow_dispatch' && inputs.force_reprocess || 'false' }}
+          INPUT_EXECUTE: ${{ inputs.execute }}
+          SCHEDULE_EXECUTE: ${{ vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE || '0' }}
         run: |
           set -euo pipefail
-          target_repo="${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}"
-          target_branch="${{ github.event_name == 'workflow_dispatch' && inputs.target_branch || '' }}"
-          lookback_minutes="${{ github.event_name == 'workflow_dispatch' && inputs.lookback_minutes || vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}"
-          since="${{ github.event_name == 'workflow_dispatch' && inputs.since || '' }}"
-          max_comments="${{ github.event_name == 'workflow_dispatch' && inputs.max_comments || vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '100' }}"
-          item_numbers="${{ github.event_name == 'workflow_dispatch' && inputs.item_numbers || '' }}"
-          comment_ids="${{ github.event_name == 'workflow_dispatch' && inputs.comment_ids || '' }}"
-          runner="${{ github.event_name == 'workflow_dispatch' && inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}"
-          execution_runner="${{ github.event_name == 'workflow_dispatch' && inputs.execution_runner || vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}"
-          force_reprocess="${{ github.event_name == 'workflow_dispatch' && inputs.force_reprocess || 'false' }}"
+          target_repo="$INPUT_TARGET_REPO"
+          target_branch="$INPUT_TARGET_BRANCH"
+          lookback_minutes="$INPUT_LOOKBACK_MINUTES"
+          since="$INPUT_SINCE"
+          max_comments="$INPUT_MAX_COMMENTS"
+          item_numbers="$INPUT_ITEM_NUMBERS"
+          comment_ids="$INPUT_COMMENT_IDS"
+          runner="$INPUT_RUNNER"
+          execution_runner="$INPUT_EXECUTION_RUNNER"
+          force_reprocess="$INPUT_FORCE_REPROCESS"
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            target_repo="${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}"
-            target_branch="${{ github.event.client_payload.target_branch || '' }}"
-            lookback_minutes="${{ github.event.client_payload.lookback_minutes || vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}"
+            target_repo="$DISPATCH_TARGET_REPO"
+            target_branch="$DISPATCH_TARGET_BRANCH"
+            lookback_minutes="$DISPATCH_LOOKBACK_MINUTES"
             since=""
-            max_comments="${{ github.event.client_payload.max_comments || '1' }}"
-            item_numbers="${{ github.event.client_payload.item_number || '' }}"
-            comment_ids="${{ github.event.client_payload.comment_id || '' }}"
-            status_comment_id="${{ github.event.client_payload.status_comment_id || '' }}"
-            force_reprocess="${{ github.event.client_payload.force_reprocess || 'false' }}"
+            max_comments="$DISPATCH_MAX_COMMENTS"
+            item_numbers="$DISPATCH_ITEM_NUMBERS"
+            comment_ids="$DISPATCH_COMMENT_IDS"
+            status_comment_id="$DISPATCH_STATUS_COMMENT_ID"
+            force_reprocess="$DISPATCH_FORCE_REPROCESS"
           else
             status_comment_id=""
           fi
@@ -226,9 +246,9 @@ jobs:
           if [ "$force_reprocess" = "true" ]; then
             args+=(--force-reprocess)
           fi
-          if { [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.execute }}" = "true" ]; } ||
+          if { [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$INPUT_EXECUTE" = "true" ]; } ||
              { [ "${{ github.event_name }}" = "repository_dispatch" ]; } ||
-             { [ "${{ github.event_name }}" = "schedule" ] && [ "${{ vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE || '0' }}" = "1" ]; }; then
+             { [ "${{ github.event_name }}" = "schedule" ] && [ "$SCHEDULE_EXECUTE" = "1" ]; }; then
             args+=(--execute)
           fi
           pnpm run repair:comment-router -- "${args[@]}"
@@ -261,28 +281,46 @@ jobs:
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
           CLAWSWEEPER_MUTATION_TOKEN_SOURCE: clawsweeper-app
           CLAWSWEEPER_ALLOW_MERGE: ${{ vars.CLAWSWEEPER_ALLOW_MERGE || '0' }}
+          DISPATCH_TARGET_REPO: ${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}
+          DISPATCH_TARGET_BRANCH: ${{ github.event.client_payload.target_branch || '' }}
+          DISPATCH_LOOKBACK_MINUTES: ${{ github.event.client_payload.lookback_minutes || vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
+          DISPATCH_MAX_COMMENTS: ${{ github.event.client_payload.max_comments || '1' }}
+          DISPATCH_ITEM_NUMBERS: ${{ github.event.client_payload.item_number || '' }}
+          DISPATCH_COMMENT_IDS: ${{ github.event.client_payload.comment_id || '' }}
+          DISPATCH_STATUS_COMMENT_ID: ${{ github.event.client_payload.status_comment_id || '' }}
+          DISPATCH_FORCE_REPROCESS: ${{ github.event.client_payload.force_reprocess || 'false' }}
+          INPUT_TARGET_REPO: ${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
+          INPUT_TARGET_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.target_branch || '' }}
+          INPUT_LOOKBACK_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.lookback_minutes || vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
+          INPUT_SINCE: ${{ github.event_name == 'workflow_dispatch' && inputs.since || '' }}
+          INPUT_MAX_COMMENTS: ${{ github.event_name == 'workflow_dispatch' && inputs.max_comments || vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '100' }}
+          INPUT_ITEM_NUMBERS: ${{ github.event_name == 'workflow_dispatch' && inputs.item_numbers || '' }}
+          INPUT_COMMENT_IDS: ${{ github.event_name == 'workflow_dispatch' && inputs.comment_ids || '' }}
+          INPUT_RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+          INPUT_EXECUTION_RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.execution_runner || vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
+          INPUT_FORCE_REPROCESS: ${{ github.event_name == 'workflow_dispatch' && inputs.force_reprocess || 'false' }}
         run: |
           set -euo pipefail
-          target_repo="${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}"
-          target_branch="${{ github.event_name == 'workflow_dispatch' && inputs.target_branch || '' }}"
-          lookback_minutes="${{ github.event_name == 'workflow_dispatch' && inputs.lookback_minutes || vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}"
-          since="${{ github.event_name == 'workflow_dispatch' && inputs.since || '' }}"
-          max_comments="${{ github.event_name == 'workflow_dispatch' && inputs.max_comments || vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '100' }}"
-          item_numbers="${{ github.event_name == 'workflow_dispatch' && inputs.item_numbers || '' }}"
-          comment_ids="${{ github.event_name == 'workflow_dispatch' && inputs.comment_ids || '' }}"
-          runner="${{ github.event_name == 'workflow_dispatch' && inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}"
-          execution_runner="${{ github.event_name == 'workflow_dispatch' && inputs.execution_runner || vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}"
-          force_reprocess="${{ github.event_name == 'workflow_dispatch' && inputs.force_reprocess || 'false' }}"
+          target_repo="$INPUT_TARGET_REPO"
+          target_branch="$INPUT_TARGET_BRANCH"
+          lookback_minutes="$INPUT_LOOKBACK_MINUTES"
+          since="$INPUT_SINCE"
+          max_comments="$INPUT_MAX_COMMENTS"
+          item_numbers="$INPUT_ITEM_NUMBERS"
+          comment_ids="$INPUT_COMMENT_IDS"
+          runner="$INPUT_RUNNER"
+          execution_runner="$INPUT_EXECUTION_RUNNER"
+          force_reprocess="$INPUT_FORCE_REPROCESS"
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            target_repo="${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}"
-            target_branch="${{ github.event.client_payload.target_branch || '' }}"
-            lookback_minutes="${{ github.event.client_payload.lookback_minutes || vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}"
+            target_repo="$DISPATCH_TARGET_REPO"
+            target_branch="$DISPATCH_TARGET_BRANCH"
+            lookback_minutes="$DISPATCH_LOOKBACK_MINUTES"
             since=""
-            max_comments="${{ github.event.client_payload.max_comments || '1' }}"
-            item_numbers="${{ github.event.client_payload.item_number || '' }}"
-            comment_ids="${{ github.event.client_payload.comment_id || '' }}"
-            status_comment_id="${{ github.event.client_payload.status_comment_id || '' }}"
-            force_reprocess="${{ github.event.client_payload.force_reprocess || 'false' }}"
+            max_comments="$DISPATCH_MAX_COMMENTS"
+            item_numbers="$DISPATCH_ITEM_NUMBERS"
+            comment_ids="$DISPATCH_COMMENT_IDS"
+            status_comment_id="$DISPATCH_STATUS_COMMENT_ID"
+            force_reprocess="$DISPATCH_FORCE_REPROCESS"
           else
             status_comment_id=""
           fi
