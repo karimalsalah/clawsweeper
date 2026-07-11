@@ -76,8 +76,10 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Explain skipped commit finding
+        env:
+          TARGET_REPO: ${{ github.event.client_payload.target_repo }}
         run: |
-          echo "Skipping commit finding repair for ${{ github.event.client_payload.target_repo }}."
+          echo "Skipping commit finding repair for $TARGET_REPO."
           echo "Set CLAWSWEEPER_ENABLE_CLAWHUB=1 after installing the ClawSweeper GitHub App on openclaw/clawhub."
 
   intake:

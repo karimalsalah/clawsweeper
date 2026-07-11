@@ -54,8 +54,10 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Explain skipped commit review
+        env:
+          TARGET_REPO: ${{ github.event.client_payload.target_repo }}
         run: |
-          echo "Skipping commit review for ${{ github.event.client_payload.target_repo }}."
+          echo "Skipping commit review for $TARGET_REPO."
           echo "Set CLAWSWEEPER_ENABLE_CLAWHUB=1 after installing the ClawSweeper GitHub App on openclaw/clawhub."
 
   plan:
@@ -84,9 +86,12 @@ jobs:
 
       - name: Resolve mode
         id: mode
+        env:
+          ENABLED_INPUT: ${{ github.event.inputs.enabled || github.event.client_payload.enabled || 'true' }}
+          CREATE_CHECKS_INPUT: ${{ github.event.inputs.create_checks || github.event.client_payload.create_checks || vars.CLAWSWEEPER_COMMIT_REVIEW_CREATE_CHECKS || 'false' }}
         run: |
-          enabled="${{ github.event.inputs.enabled || github.event.client_payload.enabled || 'true' }}"
-          create_checks="${{ github.event.inputs.create_checks || github.event.client_payload.create_checks || vars.CLAWSWEEPER_COMMIT_REVIEW_CREATE_CHECKS || 'false' }}"
+          enabled="$ENABLED_INPUT"
+          create_checks="$CREATE_CHECKS_INPUT"
           case "$enabled" in
             false|FALSE|0|no|NO|off|OFF)
               echo "Commit review disabled by input/payload."
@@ -104,8 +109,10 @@ jobs:
 
       - name: Resolve target repository
         id: target
+        env:
+          TARGET_REPO_INPUT: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw' }}
         run: |
-          target_repo="${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw' }}"
+          target_repo="$TARGET_REPO_INPUT"
           if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
             echo "Invalid target_repo: $target_repo" >&2
             exit 1

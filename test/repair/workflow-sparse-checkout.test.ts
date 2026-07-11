@@ -51,8 +51,9 @@ test("repair comment router workflow preserves repository dispatch target branch
   assert.match(workflow, /target_branch:\n\s+description:/);
   assert.match(
     workflow,
-    /target_branch="\$\{\{ github\.event\.client_payload\.target_branch \|\| '' \}\}"/,
+    /DISPATCH_TARGET_BRANCH: \$\{\{ github\.event\.client_payload\.target_branch \|\| '' \}\}/,
   );
+  assert.equal([...workflow.matchAll(/target_branch="\$DISPATCH_TARGET_BRANCH"/g)].length, 2);
   assert.equal(
     [
       ...workflow.matchAll(
@@ -66,13 +67,25 @@ test("repair comment router workflow preserves repository dispatch target branch
 test("sweep workflow preserves workflow dispatch target branch", () => {
   const workflow = fs.readFileSync(path.join(process.cwd(), ".github/workflows/sweep.yml"), "utf8");
   const dispatchTargetBranchResolver =
-    /target_branch="\$\{\{ github\.event_name == 'workflow_dispatch' && github\.event\.inputs\.target_branch \|\| github\.event\.client_payload\.target_branch \|\| 'main' \}\}"/g;
-  const continuationTargetBranch =
-    /-f target_branch="\$\{\{ needs\.plan\.outputs\.target_branch \}\}"/g;
+    /(?:PAYLOAD_TARGET_BRANCH|REQUESTED_TARGET_BRANCH): \$\{\{ github\.event_name == 'workflow_dispatch' && github\.event\.inputs\.target_branch \|\| github\.event\.client_payload\.target_branch \|\| 'main' \}\}/g;
+  const dispatchTargetBranchAssignment =
+    /target_branch="\$(?:PAYLOAD_TARGET_BRANCH|REQUESTED_TARGET_BRANCH)"/g;
+  const continuationStart = workflow.indexOf("- name: Continue sweep");
+  const continuationEnd = workflow.indexOf("\n  retry-failed-reviews:", continuationStart);
+  const continuationBlock = workflow.slice(continuationStart, continuationEnd);
 
   assert.match(workflow, /target_branch:\n\s+description: "Target repository branch to review"/);
   assert.equal([...workflow.matchAll(dispatchTargetBranchResolver)].length, 2);
-  assert.equal([...workflow.matchAll(continuationTargetBranch)].length, 2);
+  assert.equal([...workflow.matchAll(dispatchTargetBranchAssignment)].length, 2);
+  assert.equal(
+    [
+      ...continuationBlock.matchAll(
+        /TARGET_BRANCH: \$\{\{ needs\.plan\.outputs\.target_branch \}\}/g,
+      ),
+    ].length,
+    2,
+  );
+  assert.equal([...continuationBlock.matchAll(/-f target_branch="\$TARGET_BRANCH"/g)].length, 2);
 });
 
 function sparseCheckoutEntries(workflow: string): Set<string> {

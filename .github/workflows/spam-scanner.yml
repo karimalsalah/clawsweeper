@@ -126,25 +126,38 @@ jobs:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
+          DISPATCH_TARGET_REPO: ${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}
+          DISPATCH_LOOKBACK_MINUTES: ${{ github.event.client_payload.lookback_minutes || vars.CLAWSWEEPER_SPAM_LOOKBACK_MINUTES || '180' }}
+          DISPATCH_MAX_COMMENTS: ${{ github.event.client_payload.max_comments || '1' }}
+          DISPATCH_COMMENT_IDS: ${{ github.event.client_payload.comment_id || '' }}
+          DISPATCH_REVIEW_COMMENT_IDS: ${{ github.event.client_payload.review_comment_id || '' }}
+          DISPATCH_FORCE_REPROCESS: ${{ github.event.client_payload.force_reprocess || 'false' }}
+          INPUT_TARGET_REPO: ${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
+          INPUT_LOOKBACK_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.lookback_minutes || vars.CLAWSWEEPER_SPAM_LOOKBACK_MINUTES || '180' }}
+          INPUT_SINCE: ${{ github.event_name == 'workflow_dispatch' && inputs.since || '' }}
+          INPUT_MAX_COMMENTS: ${{ github.event_name == 'workflow_dispatch' && inputs.max_comments || vars.CLAWSWEEPER_SPAM_MAX_COMMENTS || '100' }}
+          INPUT_COMMENT_IDS: ${{ github.event_name == 'workflow_dispatch' && inputs.comment_ids || '' }}
+          INPUT_REVIEW_COMMENT_IDS: ${{ github.event_name == 'workflow_dispatch' && inputs.review_comment_ids || '' }}
+          INPUT_FORCE_REPROCESS: ${{ github.event_name == 'workflow_dispatch' && inputs.force_reprocess || 'false' }}
         run: |
           set -euo pipefail
-          target_repo="${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}"
-          lookback_minutes="${{ github.event_name == 'workflow_dispatch' && inputs.lookback_minutes || vars.CLAWSWEEPER_SPAM_LOOKBACK_MINUTES || '180' }}"
-          since="${{ github.event_name == 'workflow_dispatch' && inputs.since || '' }}"
-          max_comments="${{ github.event_name == 'workflow_dispatch' && inputs.max_comments || vars.CLAWSWEEPER_SPAM_MAX_COMMENTS || '100' }}"
-          comment_ids="${{ github.event_name == 'workflow_dispatch' && inputs.comment_ids || '' }}"
-          review_comment_ids="${{ github.event_name == 'workflow_dispatch' && inputs.review_comment_ids || '' }}"
+          target_repo="$INPUT_TARGET_REPO"
+          lookback_minutes="$INPUT_LOOKBACK_MINUTES"
+          since="$INPUT_SINCE"
+          max_comments="$INPUT_MAX_COMMENTS"
+          comment_ids="$INPUT_COMMENT_IDS"
+          review_comment_ids="$INPUT_REVIEW_COMMENT_IDS"
           model="internal"
-          force_reprocess="${{ github.event_name == 'workflow_dispatch' && inputs.force_reprocess || 'false' }}"
+          force_reprocess="$INPUT_FORCE_REPROCESS"
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            target_repo="${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}"
-            lookback_minutes="${{ github.event.client_payload.lookback_minutes || vars.CLAWSWEEPER_SPAM_LOOKBACK_MINUTES || '180' }}"
+            target_repo="$DISPATCH_TARGET_REPO"
+            lookback_minutes="$DISPATCH_LOOKBACK_MINUTES"
             since=""
-            max_comments="${{ github.event.client_payload.max_comments || '1' }}"
-            comment_ids="${{ github.event.client_payload.comment_id || '' }}"
-            review_comment_ids="${{ github.event.client_payload.review_comment_id || '' }}"
+            max_comments="$DISPATCH_MAX_COMMENTS"
+            comment_ids="$DISPATCH_COMMENT_IDS"
+            review_comment_ids="$DISPATCH_REVIEW_COMMENT_IDS"
             model="internal"
-            force_reprocess="${{ github.event.client_payload.force_reprocess || 'false' }}"
+            force_reprocess="$DISPATCH_FORCE_REPROCESS"
           fi
 
           args=(
@@ -170,10 +183,14 @@ jobs:
 
       - name: Commit spam scanner audit
         if: always()
+        env:
+          REQUESTED_TARGET_REPO: ${{ github.event_name == 'repository_dispatch' && (github.event.client_payload.target_repo || 'openclaw/openclaw') || github.event.inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
+          REQUESTED_COMMENT_IDS: ${{ github.event_name == 'workflow_dispatch' && inputs.comment_ids || github.event.client_payload.comment_id || '' }}
+          REQUESTED_REVIEW_COMMENT_IDS: ${{ github.event_name == 'workflow_dispatch' && inputs.review_comment_ids || github.event.client_payload.review_comment_id || '' }}
         run: |
-          target_repo="${{ github.event_name == 'repository_dispatch' && (github.event.client_payload.target_repo || 'openclaw/openclaw') || github.event.inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}"
-          comment_ids="${{ github.event_name == 'workflow_dispatch' && inputs.comment_ids || github.event.client_payload.comment_id || '' }}"
-          review_comment_ids="${{ github.event_name == 'workflow_dispatch' && inputs.review_comment_ids || github.event.client_payload.review_comment_id || '' }}"
+          target_repo="$REQUESTED_TARGET_REPO"
+          comment_ids="$REQUESTED_COMMENT_IDS"
+          review_comment_ids="$REQUESTED_REVIEW_COMMENT_IDS"
           publish_args=(--message "chore: record ClawSweeper spam scan")
           if [ "${{ github.event_name }}" = "repository_dispatch" ] && { [ -n "$comment_ids" ] || [ -n "$review_comment_ids" ]; }; then
             target_slug="${target_repo//\//-}"
