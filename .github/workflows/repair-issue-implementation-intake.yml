@@ -1,0 +1,250 @@
+name: repair issue implementation intake
+
+on:
+  repository_dispatch:
+    types: [clawsweeper_issue_implementation]
+  workflow_dispatch:
+    inputs:
+      enabled:
+        description: "Run issue implementation intake"
+        required: false
+        default: "true"
+        type: string
+      target_repo:
+        description: "Target repository"
+        required: true
+        default: "openclaw/openclaw"
+        type: string
+      item_number:
+        description: "Issue number approved for implementation"
+        required: true
+        type: string
+      candidate_kind:
+        description: "Issue implementation candidate kind: strict_bug, vision_fit, or viable"
+        required: false
+        default: strict_bug
+        type: string
+      report_repo:
+        description: "Repository containing the ClawSweeper report"
+        required: false
+        default: "openclaw/clawsweeper-state"
+        type: string
+      report_path:
+        description: "Path to the ClawSweeper report"
+        required: false
+        default: ""
+        type: string
+      report_url:
+        description: "Public report URL"
+        required: false
+        default: ""
+        type: string
+      runner:
+        description: "Runner label for repair planning/review work"
+        required: false
+        default: blacksmith-4vcpu-ubuntu-2404
+        type: string
+      execution_runner:
+        description: "Runner label for fix/apply execution work"
+        required: false
+        default: blacksmith-16vcpu-ubuntu-2404
+        type: string
+      model:
+        description: "Internal Codex model alias"
+        required: false
+        default: internal
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+  CLAWSWEEPER_ALLOW_EXECUTE: ${{ vars.CLAWSWEEPER_ALLOW_EXECUTE == '1' && '1' || '0' }}
+  CLAWSWEEPER_ALLOW_FIX_PR: ${{ vars.CLAWSWEEPER_ALLOW_FIX_PR == '1' && '1' || '0' }}
+  CLAWSWEEPER_ALLOW_MERGE: "0"
+  CLAWSWEEPER_MODEL: internal
+  CLAWSWEEPER_CODEX_REASONING_EFFORT: ${{ vars.CLAWSWEEPER_CODEX_REASONING_EFFORT || 'high' }}
+  CLAWSWEEPER_GIT_USER_NAME: ${{ vars.CLAWSWEEPER_GIT_USER_NAME || 'clawsweeper[bot]' }}
+  CLAWSWEEPER_GIT_USER_EMAIL: ${{ vars.CLAWSWEEPER_GIT_USER_EMAIL || '274271284+clawsweeper[bot]@users.noreply.github.com' }}
+
+concurrency:
+  group: issue-implementation-${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw' }}-${{ github.event.inputs.item_number || github.event.client_payload.item_number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  intake:
+    runs-on: ${{ github.event.client_payload.intake_runner || vars.CLAWSWEEPER_ISSUE_IMPLEMENTATION_INTAKE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          filter: blob:none
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:repair
+
+      - name: Resolve target repository
+        id: target
+        env:
+          TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw' }}
+        run: |
+          set -euo pipefail
+          case "$TARGET_REPO" in
+            */*) ;;
+            *)
+              echo "Invalid target repository: $TARGET_REPO" >&2
+              exit 1
+              ;;
+          esac
+          target_owner="${TARGET_REPO%%/*}"
+          target_name="${TARGET_REPO#*/}"
+          if ! printf '%s' "$target_owner" | grep -Eq '^[A-Za-z0-9_.-]+$' ||
+             ! printf '%s' "$target_name" | grep -Eq '^[A-Za-z0-9_.-]+$'; then
+            echo "Invalid target repository: $TARGET_REPO" >&2
+            exit 1
+          fi
+          target_slug="$(
+            printf '%s-%s' "$target_owner" "$target_name" |
+              tr '[:upper:]' '[:lower:]' |
+              sed -E 's/[^a-z0-9_.-]+/-/g; s/^-+//; s/-+$//'
+          )"
+          {
+            echo "target_owner=$target_owner"
+            echo "target_name=$target_name"
+            echo "target_slug=$target_slug"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create target read token
+        id: target-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.target_owner }}
+          repositories: ${{ steps.target.outputs.target_name }}
+          permission-contents: read
+          permission-issues: read
+          permission-pull-requests: read
+
+      - name: Create target status token
+        id: target-status-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.target_owner }}
+          repositories: ${{ steps.target.outputs.target_name }}
+          permission-issues: write
+
+      - name: Create central dispatch token
+        id: dispatch-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: openclaw
+          repositories: clawsweeper
+          permission-actions: write
+          permission-contents: write
+
+      - name: Create state token
+        id: state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/setup-state
+        with:
+          token: ${{ steps.state-token.outputs.token }}
+          fetch-depth: 1
+          sparse-checkout: |
+            records/${{ steps.target.outputs.target_slug }}
+            jobs
+            results
+
+      - name: Prepare issue implementation intake
+        id: prepare
+        env:
+          GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          ENABLED: ${{ github.event.inputs.enabled || github.event.client_payload.enabled || vars.CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS || 'false' }}
+          TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw' }}
+          ITEM_NUMBER: ${{ github.event.inputs.item_number || github.event.client_payload.item_number }}
+          CANDIDATE_KIND: ${{ github.event.inputs.candidate_kind || github.event.client_payload.candidate_kind || 'strict_bug' }}
+          REPORT_REPO: ${{ github.event.inputs.report_repo || github.event.client_payload.report_repo || 'openclaw/clawsweeper-state' }}
+          REPORT_PATH: ${{ github.event.inputs.report_path || github.event.client_payload.report_path }}
+          REPORT_URL: ${{ github.event.inputs.report_url || github.event.client_payload.report_url }}
+        run: |
+          set -euo pipefail
+          args=(
+            prepare
+            --enabled "$ENABLED"
+            --target-repo "$TARGET_REPO"
+            --item-number "$ITEM_NUMBER"
+            --candidate-kind "$CANDIDATE_KIND"
+            --report-repo "$REPORT_REPO"
+          )
+          if [ -n "${REPORT_PATH:-}" ]; then
+            args+=(--report-path "$REPORT_PATH")
+            if [ -f "$REPORT_PATH" ]; then
+              args+=(--report-file "$REPORT_PATH")
+            fi
+          fi
+          if [ -n "${REPORT_URL:-}" ]; then
+            args+=(--report-url "$REPORT_URL")
+          fi
+          pnpm run repair:issue-implementation-intake -- "${args[@]}"
+
+      - name: Commit intake ledger
+        if: always()
+        run: |
+          set -euo pipefail
+          pnpm run repair:publish-main -- \
+            --message "chore: record issue implementation intake" \
+            --path jobs \
+            --path results \
+            --max-attempts 12 \
+            --push-attempts 4
+
+      - name: Publish automatic implementation queue status
+        if: ${{ steps.prepare.outputs.should_repair == 'true' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.target-status-token.outputs.token }}
+          CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
+        run: |
+          pnpm run repair:issue-implementation-status -- \
+            --repo "${{ steps.prepare.outputs.target_repo }}" \
+            --item-number "${{ steps.prepare.outputs.item_number }}" \
+            --state "Queued" \
+            --detail "Review complete; no active implementation PR was found. The Codex implementation worker is queued." \
+            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Dispatch repair worker
+        if: ${{ steps.prepare.outputs.should_repair == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+          MAX_LIVE_WORKERS: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_LIVE_WORKERS || '' }}
+          RUNNER: ${{ github.event.inputs.runner || github.event.client_payload.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+          EXECUTION_RUNNER: ${{ github.event.inputs.execution_runner || github.event.client_payload.execution_runner || vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
+          MODEL: internal
+        run: |
+          set -euo pipefail
+          cap_args=()
+          if [ -n "$MAX_LIVE_WORKERS" ]; then
+            cap_args=(--max-live-workers "$MAX_LIVE_WORKERS")
+          fi
+          git pull --rebase --autostash
+          pnpm run repair:dispatch -- "${{ steps.prepare.outputs.job_path }}" \
+            --mode autonomous \
+            --wait-for-capacity \
+            "${cap_args[@]}" \
+            --runner "$RUNNER" \
+            --execution-runner "$EXECUTION_RUNNER" \
+            --model "$MODEL" \
+            --ref main

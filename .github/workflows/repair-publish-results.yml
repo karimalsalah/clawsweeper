@@ -1,0 +1,202 @@
+name: repair publish cluster results
+
+on:
+  workflow_run:
+    workflows:
+      - repair cluster worker
+    types:
+      - completed
+
+permissions:
+  contents: write
+  actions: read
+  pull-requests: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+
+concurrency:
+  group: clawsweeper-repair-publish-results
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    steps:
+      - name: Create GitHub App token
+        id: app_token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || github.repository_owner }}
+          permission-actions: read
+          permission-contents: write
+          permission-pull-requests: read
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          filter: blob:none
+          fetch-depth: 0
+          token: ${{ steps.app_token.outputs.token }}
+          persist-credentials: false
+
+      - name: Create state token
+        id: state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/setup-state
+        with:
+          token: ${{ steps.state-token.outputs.token }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Enable pinned pnpm
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          for attempt in 1 2 3; do
+            if corepack prepare "pnpm@10.33.2" --activate; then
+              exit 0
+            fi
+            sleep "$((attempt * 10))"
+          done
+          corepack prepare "pnpm@10.33.2" --activate
+
+      # This workflow_run job executes trusted main-branch code only; artifacts
+      # from worker runs are downloaded as data and handled by repair publishers.
+      # codeql[actions/untrusted-checkout/critical]
+      # lgtm[actions/untrusted-checkout/critical]
+      - name: Resolve pnpm store
+        id: pnpm-store
+        shell: bash
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-pnpm-10.33.2-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-10.33.2-
+            ${{ runner.os }}-pnpm-
+
+      # This workflow_run job executes trusted main-branch code only; artifacts
+      # from worker runs are downloaded as data and handled by repair publishers.
+      # codeql[actions/untrusted-checkout/critical]
+      # lgtm[actions/untrusted-checkout/critical]
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if pnpm install --frozen-lockfile; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep "$((attempt * 10))"
+          done
+          pnpm run build:repair
+
+      - name: Download worker artifacts
+        id: download
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          set -euo pipefail
+          rm -rf artifacts
+          mkdir -p artifacts
+          final_artifact="clawsweeper-repair-${RUN_ID}-${RUN_ATTEMPT:-1}"
+          if gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$final_artifact" --dir artifacts; then
+            echo "has_artifacts=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --dir artifacts; then
+            find artifacts -type d -name 'clawsweeper-repair-worker-*' -prune -exec rm -rf {} +
+            if find artifacts -type f -print -quit | grep -q .; then
+              echo "has_artifacts=1" >> "$GITHUB_OUTPUT"
+            else
+              echo "has_artifacts=0" >> "$GITHUB_OUTPUT"
+              echo "::notice title=No repair artifacts::No publishable artifacts for worker run $RUN_ID."
+            fi
+            exit 0
+          fi
+          echo "has_artifacts=0" >> "$GITHUB_OUTPUT"
+          echo "::notice title=No repair artifacts::No downloadable artifacts for worker run $RUN_ID."
+
+      # This workflow_run job executes trusted main-branch code only; artifacts
+      # from worker runs are downloaded as data and handled by repair publishers.
+      # codeql[actions/untrusted-checkout/critical]
+      # lgtm[actions/untrusted-checkout/critical]
+      - name: Publish result ledger
+        if: ${{ steps.download.outputs.has_artifacts == '1' }}
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git checkout -B main origin/main
+          pnpm run repair:publish-result -- artifacts \
+            --skip-dashboard \
+            --run-id "$RUN_ID" \
+            --run-url "$RUN_URL" \
+            --head-sha "$HEAD_SHA" \
+            --conclusion "$CONCLUSION"
+          pnpm run repair:finalize-open-prs -- --write-report
+          pnpm run repair:publish-result -- --skip-dashboard
+
+      # This workflow_run job executes trusted main-branch code only; artifacts
+      # from worker runs are downloaded as data and handled by repair publishers.
+      # codeql[actions/untrusted-checkout/critical]
+      # lgtm[actions/untrusted-checkout/critical]
+      - name: Notify OpenClaw about ClawSweeper events
+        if: ${{ steps.download.outputs.has_artifacts == '1' }}
+        env:
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          CLAWSWEEPER_OPENCLAW_HOOK_URL: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_URL }}
+          CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_TOKEN }}
+          CLAWSWEEPER_OPENCLAW_AGENT_ID: ${{ vars.CLAWSWEEPER_OPENCLAW_AGENT_ID || 'clawsweeper' }}
+          CLAWSWEEPER_DISCORD_TARGET: ${{ vars.CLAWSWEEPER_DISCORD_TARGET }}
+          CLAWSWEEPER_STATUS_INGEST_URL: https://clawsweeper.openclaw.ai/api/events
+          CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
+        run: |
+          set -euo pipefail
+          pnpm run repair:notify-events -- \
+            --run-id "$RUN_ID" \
+            --run-record "results/runs/$RUN_ID.json" \
+            --write-report
+
+      # This workflow_run job executes trusted main-branch code only; artifacts
+      # from worker runs are downloaded as data and handled by repair publishers.
+      # codeql[actions/untrusted-checkout/critical]
+      # lgtm[actions/untrusted-checkout/critical]
+      - name: Commit result ledger
+        if: ${{ steps.download.outputs.has_artifacts == '1' }}
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          pnpm run repair:publish-main -- \
+            --message "chore: publish cluster result" \
+            --path results \
+            --path jobs/openclaw/closed \
+            --path repair-apply-report.json \
+            --path notifications \
+            --max-attempts 12 \
+            --push-attempts 4
