@@ -1398,7 +1398,9 @@ test("sweep failed-review retry lane defaults to dry-run exact-item dispatch", (
     workflow.indexOf("\n    runs-on:", workflow.indexOf("\n  plan:")),
   );
 
-  assert.match(workflow, /cron: "13 \* \* \* \*"/);
+  // Schedule triggers were removed in the openclaw drain kill (estate consolidation
+  // 2026-07-13, WORKFLOWS-KILLED.md) — assert the kill holds instead of the cron.
+  assert.doesNotMatch(workflow, /^  schedule:/m);
   assert.match(planHeader, /github\.event\.schedule == '13 \* \* \* \*'/);
   assert.match(retryBlock, /pnpm run retry-failed-reviews --/);
   assert.match(

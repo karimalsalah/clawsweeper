@@ -124,7 +124,9 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   const workflow = readFileSync(".github/workflows/sweep.yml", "utf8").replace(/\r\n/g, "\n");
   const inputBlock = workflow.slice(
     workflow.indexOf("  workflow_dispatch:\n    inputs:"),
-    workflow.indexOf("\n  schedule:"),
+    // schedule: removed in the openclaw drain kill (2026-07-13) — the on-block now
+    // ends at the top-level permissions key.
+    workflow.indexOf("\npermissions:"),
   );
   const applyJob = workflow.slice(workflow.indexOf("\n  apply-existing:"));
   const applyStep = applyJob.slice(
@@ -239,8 +241,8 @@ test("proof nudge workflow is manual-first and scheduled behind repo vars", () =
 
   assert.doesNotMatch(sweepWorkflow, /proof_nudges/);
   assert.match(workflow, /execute:[\s\S]*?default: "false"/);
-  assert.match(workflow, /cron: "0 10 \* \* \*"/);
-  assert.doesNotMatch(workflow, /cron: "0 11 \* \* \*"/);
+  // Schedule removed in the openclaw drain kill (2026-07-13) — assert it stays gone.
+  assert.doesNotMatch(workflow, /^  schedule:/m);
   assert.match(concurrency, /clawsweeper-proof-nudges/);
   assert.doesNotMatch(job, /Check scheduled Central time/);
   assert.doesNotMatch(job, /PROOF_NUDGES_SCHEDULE_TZ/);
@@ -423,7 +425,8 @@ test("sweep workflow publishes target-scoped state paths", () => {
 test("sweep workflow schedules cursor-based PR comment sync batches", () => {
   const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
 
-  assert.match(workflow, /cron: "6,21,36,51 \* \* \* \*"/);
+  // Cron removed in the openclaw drain kill (2026-07-13); the gating logic below remains.
+  assert.doesNotMatch(workflow, /^  schedule:/m);
   assert.doesNotMatch(workflow, /apply_sync_open_pr_batch:/);
   assert.match(
     workflow,
@@ -499,7 +502,9 @@ test("sweep workflow_dispatch input count stays under GitHub limit", () => {
   const workflow = readFileSync(".github/workflows/sweep.yml", "utf8").replace(/\r\n/g, "\n");
   const inputBlock = workflow.slice(
     workflow.indexOf("  workflow_dispatch:\n    inputs:"),
-    workflow.indexOf("\n  schedule:"),
+    // schedule: removed in the openclaw drain kill (2026-07-13) — the on-block now
+    // ends at the top-level permissions key.
+    workflow.indexOf("\npermissions:"),
   );
   const inputNames = [...inputBlock.matchAll(/^      [A-Za-z0-9_]+:/gm)];
 

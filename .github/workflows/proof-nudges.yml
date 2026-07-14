@@ -37,9 +37,6 @@ on:
         description: "Post bot-owned proof status comments and labels; false runs dry-run only"
         required: false
         default: "false"
-  schedule:
-    - cron: "0 10 * * *"
-
 permissions:
   contents: read
   issues: write

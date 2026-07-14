@@ -38,12 +38,11 @@ on:
         required: false
         default: false
         type: boolean
-  schedule:
-    # gitcrawl-store refreshes openclaw/openclaw every 15 minutes. This intake
-    # runs daily and records the processed portable DB SHA so a
-    # delayed or duplicate tick does not enqueue work from the same store twice.
-    - cron: "8 8 * * *"
-
+  # Schedule removed in the openclaw drain kill (2026-07-13, WORKFLOWS-KILLED.md).
+  # Historical cadence rationale (still applies to manual runs):
+  # gitcrawl-store refreshes openclaw/openclaw every 15 minutes. This intake
+  # ran daily and records the processed portable DB SHA so a
+  # delayed or duplicate tick does not enqueue work from the same store twice.
 permissions:
   actions: write
   contents: write

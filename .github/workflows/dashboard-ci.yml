@@ -9,9 +9,6 @@ on:
       - repair cluster worker
       - repair comment router
     types: [completed]
-  schedule:
-    - cron: "*/5 * * * *"
-
 permissions:
   contents: read
 
